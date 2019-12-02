@@ -1,18 +1,46 @@
 JSMpeg.Demuxer.TS = (function () {
     "use strict";
 
-    var TS = function (options) {
+    /**
+     * Парсер transport stream для mpeg2
+     * @param options опции
+     * @constructor
+     */
+    function TS(options) {
+        /**
+         * Буффер TS
+         * @type {?BitBuffer}
+         */
         this.bits = null;
+        /**
+         * Бит буфер с оставшимися без обработки? байтами
+         * @type {?BitBuffer}
+         */
         this.leftoverBytes = null;
-
+        //признак конца данных видео фрейма
         this.guessVideoFrameEnd = true;
+        //мапа PIDS к stream ID
         this.pidsToStreamIds = {};
-
+        /**
+         * Мапа stream ID на мету о PES
+         * @type {{streamId: string: {
+            destination: JSMpeg.Decoder,
+            currentLength: number,
+            totalLength: number,
+            pts: number,
+            buffers: Array<BitBuffer>
+        }}}
+         */
         this.pesPacketInfo = {};
         this.startTime = 0;
         this.currentTime = 0;
-    };
+    }
 
+    /**
+     * Соединиться с источником данных
+     * @param streamId PES stream ID
+     * @param destination вывод в декодер
+     */
     TS.prototype.connect = function (streamId, destination) {
         this.pesPacketInfo[streamId] = {
             destination: destination,
@@ -23,28 +51,37 @@ JSMpeg.Demuxer.TS = (function () {
         };
     };
 
-//TODO: ?
+    /**
+     * Запись в TS сырые данные?
+     * @param buffer буфер
+     */
     TS.prototype.write = function (buffer) {
         if (this.leftoverBytes) {
-            var totalLength = buffer.byteLength + this.leftoverBytes.byteLength;
+            const totalLength = buffer.byteLength + this.leftoverBytes.byteLength;
             this.bits = new JSMpeg.BitBuffer(totalLength);
             this.bits.write([this.leftoverBytes, buffer]);
         } else {
             this.bits = new JSMpeg.BitBuffer(buffer);
         }
 
-        while (this.bits.has(188 << 3) && this.parsePacket()) {
-        }
+        //пока есть 188 байт и пока пакет парсится из TS - парсим
+        while (this.bits.has(188 << 3) && this.parsePacket()) {}
 
-        var leftoverCount = this.bits.byteLength - (this.bits.index >> 3);
-        this.leftoverBytes = leftoverCount > 0
-            ? this.bits.bytes.subarray(this.bits.index >> 3)
-            : null;
+        //если осталось что-то и это что-то не целый пакет - сохраним для следующей итерации
+        const leftoverCount = this.bits.byteLength - (this.bits.index >> 3);
+        this.leftoverBytes = leftoverCount > 0 ? this.bits.bytes.subarray(this.bits.index >> 3) : null;
     };
 
-//TODO: WIP
+    /**
+     * Попытка разобрать пакет TS из буфера
+     * @returns {boolean} статус парсинга пакета TS - успех/ошибка
+     */
     TS.prototype.parsePacket = function () {
-        // Check if we're in sync with packet boundaries; attempt to resync if not.
+        /**
+         * Определяем синхронизировано ли чтение проверяя следующий байт
+         * Sync byte 8 0xff000000 Bit pattern of 0x47 (ASCII char 'G')
+         * original: Check if we're in sync with packet boundaries; attempt to resync if not.
+         */
         if (this.bits.read(8) !== 0x47) {
             if (!this.resync()) {
                 // Couldn't resync; maybe next time...
@@ -52,7 +89,9 @@ JSMpeg.Demuxer.TS = (function () {
             }
         }
 
+        //конец пакета
         const end = (this.bits.index >> 3) + 187;
+        //заголовки
         const transportError = this.bits.read(1),
             payloadStart = this.bits.read(1),
             transportPriority = this.bits.read(1),
@@ -109,18 +148,22 @@ JSMpeg.Demuxer.TS = (function () {
                 //TODO: это точно нужно?
                 const packetInfo = this.pesPacketInfo[streamId];
                 if (packetInfo) {
-                    var pts = 0;
+                    let pts = 0;
+                    /**
+                     * PTS DTS indicator 11 = both present, 01 is forbidden, 10 = only PTS, 00 = no PTS or DTS
+                     */
+                    //if only PTS
                     if (ptsDtsFlag & 0x2) {
                         // The Presentation Timestamp is encoded as 33(!) bit
                         // integer, but has a "marker bit" inserted at weird places
                         // in between, making the whole thing 5 bytes in size.
                         // You can't make this shit up...
                         this.bits.skip(4);
-                        var p32_30 = this.bits.read(3);
+                        const p32_30 = this.bits.read(3);
                         this.bits.skip(1);
-                        var p29_15 = this.bits.read(15);
+                        const p29_15 = this.bits.read(15);
                         this.bits.skip(1);
-                        var p14_0 = this.bits.read(15);
+                        const p14_0 = this.bits.read(15);
                         this.bits.skip(1);
 
                         // Can't use bit shifts here; we need 33 bits of precision,
@@ -134,9 +177,7 @@ JSMpeg.Demuxer.TS = (function () {
                         }
                     }
 
-                    var payloadLength = packetLength
-                        ? packetLength - headerLength - 3
-                        : 0;
+                    const payloadLength = packetLength ? packetLength - headerLength - 3 : 0;
                     this.packetStart(packetInfo, pts, payloadLength);
                 }
 
@@ -154,14 +195,14 @@ JSMpeg.Demuxer.TS = (function () {
                 // in between, but it might just fit exactly. If this fails, we can
                 // only wait for the next PES header for that stream.
 
-                var pi = this.pesPacketInfo[streamId];
-                if (pi) {
-                    var start = this.bits.index >> 3;
-                    var complete = this.packetAddData(pi, start, end);
+                const packetInfo = this.pesPacketInfo[streamId];
+                if (packetInfo) {
+                    const start = this.bits.index >> 3;
+                    const complete = this.packetAddData(packetInfo, start, end);
 
-                    var hasPadding = !payloadStart && (adaptationField & 0x2);
+                    const hasPadding = !payloadStart && (adaptationField & 0x2);
                     if (complete || (this.guessVideoFrameEnd && hasPadding)) {
-                        this.packetComplete(pi);
+                        this.packetComplete(packetInfo);
                     }
                 }
             }
@@ -171,29 +212,34 @@ JSMpeg.Demuxer.TS = (function () {
         return true;
     };
 
+    /**
+     * Попытка синхронизироваться
+     * @returns {boolean} да/нет
+     */
     TS.prototype.resync = function () {
         // Check if we have enough data to attempt a resync. We need 5 full packets.
         if (!this.bits.has((188 * 6) << 3)) {
             return false;
         }
 
-        var byteIndex = this.bits.index >> 3;
+        const byteIndex = this.bits.index >> 3;
 
         // Look for the first sync token in the first 187 bytes
-        for (var i = 0; i < 187; i++) {
-            if (this.bits.bytes[byteIndex + i] === 0x47) {
+        for (let byteI = 0; byteI < 187; byteI++) {
+            if (this.bits.bytes[byteIndex + byteI] === 0x47) {
 
                 // Look for 4 more sync tokens, each 188 bytes appart
-                var foundSync = true;
-                for (var j = 1; j < 5; j++) {
-                    if (this.bits.bytes[byteIndex + i + 188 * j] !== 0x47) {
+                let foundSync = true;
+                for (let tsPacket = 1; tsPacket < 5; tsPacket++) {
+                    if (this.bits.bytes[byteIndex + byteI + 188 * tsPacket] !== 0x47) {
                         foundSync = false;
                         break;
                     }
                 }
 
+                //если синхронизировались - ставим индекс на нужный байт
                 if (foundSync) {
-                    this.bits.index = (byteIndex + i + 1) << 3;
+                    this.bits.index = (byteIndex + byteI + 1) << 3;
                     return true;
                 }
             }
@@ -202,30 +248,47 @@ JSMpeg.Demuxer.TS = (function () {
         // In theory, we shouldn't arrive here. If we do, we had enough data but
         // still didn't find sync - this can only happen if we were fed garbage
         // data. Check your source!
-        console.warn('JSMpeg: Possible garbage data. Skipping.');
+        console.warn("JSMpeg: Possible garbage data. Skipping.");
         this.bits.skip(187 << 3);
         return false;
     };
 
-    TS.prototype.packetStart = function (pi, pts, payloadLength) {
-        pi.totalLength = payloadLength;
-        pi.currentLength = 0;
-        pi.pts = pts;
+    /**
+     * Созлдаем мету пакета TS
+     * @param packetInfo мета пакета из {this.pesPacketInfo}
+     * @param pts PTS
+     * @param payloadLength размер полезной нагрузки
+     */
+    TS.prototype.packetStart = function (packetInfo, pts, payloadLength) {
+        packetInfo.totalLength = payloadLength;
+        packetInfo.currentLength = 0;
+        packetInfo.pts = pts;
     };
 
-    TS.prototype.packetAddData = function (pi, start, end) {
-        pi.buffers.push(this.bits.bytes.subarray(start, end));
-        pi.currentLength += end - start;
+    /**
+     * Добавить данные пакета из буфера TS в мету пакета TS
+     * @param packetInfo мета пакета из {this.pesPacketInfo}
+     * @param start начало данных пакета в общем буфере TS
+     * @param end конец данных пакета в общем буфере TS
+     * @returns {boolean}
+     */
+    TS.prototype.packetAddData = function (packetInfo, start, end) {
+        packetInfo.buffers.push(this.bits.bytes.subarray(start, end));
+        packetInfo.currentLength += end - start;
 
-        var complete = (pi.totalLength !== 0 && pi.currentLength >= pi.totalLength);
+        const complete = (packetInfo.totalLength !== 0 && packetInfo.currentLength >= packetInfo.totalLength);
         return complete;
     };
 
-    TS.prototype.packetComplete = function (pi) {
-        pi.destination.write(pi.pts, pi.buffers);
-        pi.totalLength = 0;
-        pi.currentLength = 0;
-        pi.buffers = [];
+    /**
+     * Сброить данные пакета в декодер (destination) и обнулить мету
+     * @param packetInfo
+     */
+    TS.prototype.packetComplete = function (packetInfo) {
+        packetInfo.destination.write(packetInfo.pts, packetInfo.buffers);
+        packetInfo.totalLength = 0;
+        packetInfo.currentLength = 0;
+        packetInfo.buffers = [];
     };
 
     TS.STREAM = {
@@ -243,5 +306,3 @@ JSMpeg.Demuxer.TS = (function () {
     return TS;
 
 })();
-
-
