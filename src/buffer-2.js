@@ -1,4 +1,4 @@
-JSMpeg.BitBuffer = (function () {
+JSMpeg.BitBuffer2 = (function () {
     "use strict";
 
     /**

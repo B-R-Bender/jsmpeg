@@ -1,4 +1,4 @@
-JSMpeg.Demuxer.TS = (function () {
+JSMpeg.Demuxer.TS2 = (function () {
     "use strict";
 
     /**
