@@ -128,8 +128,8 @@ JSMpeg.BitBuffer2 = (function () {
     };
 
     /**
-     * Найти следующий start code заголовка PES и установить указатель на его начало
-     * @returns {*|number|number} или Stream ID (4-й байт) если нашел или -1
+     * Найти следующий start code и установить указатель на следующий байт после него
+     * @returns {*|number|number} 4-й байт start code (типа Stream ID) если нашел или -1
      */
     BitBuffer.prototype.findNextStartCode = function () {
         for (let currentByteIndex = (this.index + 7 >> 3); currentByteIndex < this.byteLength; currentByteIndex++) {
@@ -143,22 +143,22 @@ JSMpeg.BitBuffer2 = (function () {
     };
 
     /**
-     * Найти начало данных конкретного streamId и установить указатель на начало
-     * @param streamId судя по всему это будет stream ID из заголовка PES его то и будем сравнивать
+     * Найти начало данных конкретного startCode и установить указатель на начало
+     * @param startCode судя по всему это будет stream ID из заголовка PES его то и будем сравнивать
      * @returns {number|*} или stream ID или -1 если не найдено
      */
-    BitBuffer.prototype.findStartCode = function (streamId) {
+    BitBuffer.prototype.findStartCode = function (startCode) {
         let current = 0;
         while (true) {
             current = this.findNextStartCode();
-            if (current === streamId || current === -1) {
+            if (current === startCode || current === -1) {
                 return current;
             }
         }
     };
 
     /**
-     * Проверить, является ли следующий байт началом нового PES
+     * Проверить, начинается ли со следующего байтиа какой-то start code (The first 24-bits have the value 000001 in hexadecimal)
      * @returns {boolean} да/нет
      */
     BitBuffer.prototype.nextBytesAreStartCode = function () {
@@ -168,6 +168,7 @@ JSMpeg.BitBuffer2 = (function () {
 
     /**
      * Является ли последовательность байт, начиная с переданного индекса, start code'ом из заголовка PES
+     * (The first 24-bits have the value 000001 in hexadecimal)
      * @param byteIndex интересующий индекс
      * @returns {boolean} да/нет
      */
